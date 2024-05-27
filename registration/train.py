@@ -238,7 +238,7 @@ def evaluate(agent, logger, loader, prefix='test'):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ReAgent - training on ModelNet40 and LINEMOD')
-    parser.add_argument('--mode', type=str, default='ilrl', choices=['pretrain', 'il', 'ilrl'],
+    parser.add_argument('--mode', type=str, default='pretrain', choices=['pretrain', 'il', 'ilrl'],
                         help='pretraining (pretrain), IL-only (il), IL+RL with a step-wise reward (ilrls).')
     parser.add_argument('--dataset', type=str, default='m40', choices=['m40', 'lm'],
                         help='Dataset used for training. All experiments on ModelNet40 and ScanObjectNN use the same '
