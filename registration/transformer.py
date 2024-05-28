@@ -291,18 +291,18 @@ class Transformer(nn.Module):
         src_embedding = self.model(tgt, src, None, None).transpose(2, 1).contiguous() #[2 512 800]
         return src_embedding, tgt_embedding
 
-class Position_encoding(nn.Module):
-    def __init__(self,len,ratio):
-        super(Position_encoding,self).__init__()
-        self.PE = nn.Sequential(
-            nn.Linear(3,len * ratio),
-            nn.Sigmoid(),
-            nn.Linear(len * ratio,len),
-            nn.ReLU()
-        )
-    def forward(self,x): #[ 2 800 3]
-        x=self.PE(x)
-        return x
+# class Position_encoding(nn.Module):
+#     def __init__(self,len,ratio):
+#         super(Position_encoding,self).__init__()
+#         self.PE = nn.Sequential(
+#             nn.Linear(3,len * ratio),
+#             nn.Sigmoid(),
+#             nn.Linear(len * ratio,len),
+#             nn.ReLU()
+#         )
+#     def forward(self,x): #[ 2 800 3]
+#         x=self.PE(x)
+#         return x
 #
 # class SE_Block(nn.Module):
 #     def __init__(self,ch_in,reduction=16):

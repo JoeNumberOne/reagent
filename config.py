@@ -1,5 +1,5 @@
 # ==== DATASET PATHS
-M40_PATH = "/home/xiong/mq_tianxiawudi/reagent/data/modelnet40_ply_hdf5_2048"
+M40_PATH = "/home/ghx/point cloud/regagent_dgcnn/data/modelnet40_ply_hdf5_2048"
 SON_PATH = "/PATH/TO/main_split_nobg"
 LM_PATH = "/PATH/TO/BOP19/lm"
 

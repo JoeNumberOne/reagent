@@ -262,7 +262,7 @@ if __name__ == '__main__':
 
     if args.mode == "pretrain" and dataset == "m40":
         print(f"Training: dataset '{dataset}'  - mode '{args.mode}'")
-        train(agent, logger, dataset, noise_type="clean", epochs=50, lr=1e-3, lr_step=10, alpha=0,
+        train(agent, logger, dataset, noise_type="clean", epochs=20, lr=1e-3, lr_step=10, alpha=0,
               model_path=model_path)
     else:
         if args.mode == "il":
