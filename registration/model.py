@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 # from mmcv.ops import DeformConv2dPack as DCN
 from config import *
-
+from transformer import Transformer,Position_encoding
 
 class Agent(nn.Module):
 
@@ -53,7 +53,8 @@ class StateEmbed(nn.Module):
     def __init__(self):
         super().__init__()
         self.emb_nn = PointNet()
-
+        self.pos = Position_encoding()
+        self.attention = Transformer()
 
     def forward(self, src, tgt):
         B, N, D = src.shape
@@ -64,7 +65,10 @@ class StateEmbed(nn.Module):
             emb_tgt = tgt  # re-use target embedding from first step
         else:
             emb_tgt = self.emb_nn(tgt)
-        src_embedding_p, tgt_embedding_p = self.attention(emb_src, emb_tgt)  # [32 512 1024]
+
+        src_encoding = self.Position_encoding(src.transpose(1, 2)).transpose(1, 2).contiguous()  # [2 512 800]
+        tgt_encoding = self.Position_encoding(tgt.transpose(1,2)).transpose(1,2).contiguous() #[2 512 800]
+        src_embedding_p, tgt_embedding_p = self.attention(emb_src+src_encoding, emb_tgt+tgt_encoding)  # [32 512 1024]
         emb_src = torch.max(src_embedding_p, 2, keepdim=True)[0]
         emb_tgt = torch.max(tgt_embedding_p, 2, keepdim=True)[0]
         state = torch.cat((emb_src, emb_tgt), dim=-1)
