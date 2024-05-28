@@ -3,8 +3,8 @@ import torch.nn as nn
 from torch.distributions import Categorical
 import torch.nn.functional as F
 import numpy as np
-from mmcv.ops import DeformConv2dPack as DCN
-
+# from mmcv.ops import DeformConv2dPack as DCN
+from adaptive import AdaptiveFCN
 from config import *
 
 
@@ -29,100 +29,49 @@ class Agent(nn.Module):
 
         return state, action, value, emb_tgt
 
+class PointNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv1d(3, 64, 1)
+        self.conv2 = nn.Conv1d(64, 128, 1)
+        self.conv3 = nn.Conv1d(128, 1024, 1)
 
-def knn(x, k):
-    inner = -2 * torch.matmul(x.transpose(2, 1).contiguous(), x)
-    xx = torch.sum(x ** 2, dim=1, keepdim=True)
-    pairwise_distance = -xx - inner - xx.transpose(2, 1).contiguous()
+    def forward(self, x):
+        B, D, N = x.shape
+        # embedding: BxDxN -> BxFxN
+        x1 = F.relu(self.conv1(x))
+        x2 = F.relu(self.conv2(x1))
+        x3 = self.conv3(x2)
 
-    idx = pairwise_distance.topk(k=k, dim=-1)[1]  # (batch_size, num_points, k)
-    return idx
+        # pooling: BxFxN -> BxFx1
+        x_pooled = torch.max(x3, 2, keepdim=True)[0]
+        return x_pooled.view(B, -1)  # global feature BxF
 
-
-def get_graph_feature(x, k=20):
-    # x = x.squeeze()
-    idx = knn(x, k=k)  # (batch_size, num_points, k) #使用 knn() 函数找到每个点的最近邻索引，k 是最近邻数量
-    batch_size, num_points, _ = idx.size()
-    device = torch.device('cuda')
-
-    idx_base = torch.arange(0, batch_size, device=device).view(-1, 1, 1) * num_points
-
-    idx = idx + idx_base
-
-    idx = idx.view(-1)
-
-    _, num_dims, _ = x.size()
-
-    x = x.transpose(2,
-                    1).contiguous()  # (batch_size, num_points, num_dims)  -> (batch_size*num_points, num_dims) #   batch_size * num_points * k + range(0, batch_size*num_points)
-    feature = x.view(batch_size * num_points, -1)[idx, :]
-    feature = feature.view(batch_size, num_points, k, num_dims)
-    x = x.view(batch_size, num_points, 1, num_dims).repeat(1, 1, k, 1)
-
-    feature = torch.cat((feature - x, x), dim=3).permute(0, 3, 1, 2)
-
-    return feature
 
 
 class StateEmbed(nn.Module):
 
     def __init__(self):
         super().__init__()
+        self.emb_nn = PointNet()
 
-        # self.conv1 = nn.Conv2d(in_channels=6, out_channels=64, kernel_size=1, bias=False)
-        # self.conv2 = nn.Conv2d(64, 64, kernel_size=1, bias=False)
-        # self.conv3 = nn.Conv2d(64, 128, kernel_size=1, bias=False)
-        # self.conv4 = nn.Conv2d(128, 256, kernel_size=1, bias=False)
-        # self.conv5 = nn.Conv2d(512, 1024, kernel_size=1, bias=False)
-        self.conv1 = DCN(in_channels=6, out_channels=64, kernel_size=1, bias=False)
-        self.conv2 = DCN(64, 64, kernel_size=1, bias=False)
-        self.conv3 = DCN(64, 128, kernel_size=1, bias=False)
-        self.conv4 = DCN(128, 256, kernel_size=1, bias=False)
-        self.conv5 = DCN(512, 1024, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.bn4 = nn.BatchNorm2d(256)
-        self.bn5 = nn.BatchNorm2d(1024)
 
     def forward(self, src, tgt):
         B, N, D = src.shape
 
         # O=(src,tgt) -> S=[Phi(src), Phi(tgt)]
-        emb_src = self.embed(src.transpose(2, 1))
+        emb_src = self.emb_nn(src)
         if BENCHMARK and len(tgt.shape) != 3:
             emb_tgt = tgt  # re-use target embedding from first step
         else:
-            emb_tgt = self.embed(tgt.transpose(2, 1))
+            emb_tgt = self.emb_nn(tgt)
+        emb_src = torch.max(emb_src, 2, keepdim=True)[0]
+        emb_tgt = torch.max(emb_tgt, 2, keepdim=True)[0]
         state = torch.cat((emb_src, emb_tgt), dim=-1)
         state = state.view(B, -1)
 
         return state, emb_tgt
 
-    def embed(self, x):
-        B, N, C = x.size()
-        batch_size, num_dims, num_points = x.size()
-        x = get_graph_feature(x)  # torch.Size([32, 6, 1024, 20])
-        x = x.contiguous()
-        x = self.conv1(x)
-        x = F.relu(self.bn1(x))
-        x1 = x.max(dim=-1, keepdim=True)[0]  # 最大池化
-
-        x = F.relu(self.bn2(self.conv2(x)))
-        x2 = x.max(dim=-1, keepdim=True)[0]
-        # 每个x纬度：torch.Size([32, 256, 1024, 20])
-        x = F.relu(self.bn3(self.conv3(x)))
-        x3 = x.max(dim=-1, keepdim=True)[0]
-
-        x = F.relu(self.bn4(self.conv4(x)))
-        x4 = x.max(dim=-1, keepdim=True)[0]
-        # print("--------------------")
-        # print(x.shape)
-        x = torch.cat((x1, x2, x3, x4), dim=1)
-
-        x = F.relu(self.bn5(self.conv5(x))).view(batch_size, -1, num_points)
-        x_pooled = torch.max(x, 2, keepdim=True)[0]
-        return x_pooled.view(B, -1)
 
 
 class ActorCriticHead(nn.Module):
