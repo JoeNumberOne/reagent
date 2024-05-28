@@ -41,10 +41,10 @@ class PointNet(nn.Module):
         x1 = F.relu(self.conv1(x))
         x2 = F.relu(self.conv2(x1))
         x3 = self.conv3(x2)
-
+        return x3
         # pooling: BxFxN -> BxFx1
-        x_pooled = torch.max(x3, 2, keepdim=True)[0]
-        return x_pooled.view(B, -1)  # global feature BxF
+        # x_pooled = torch.max(x3, 2, keepdim=True)[0]
+        # return x_pooled.view(B, -1)  # global feature BxF
 
 
 
@@ -64,8 +64,9 @@ class StateEmbed(nn.Module):
             emb_tgt = tgt  # re-use target embedding from first step
         else:
             emb_tgt = self.emb_nn(tgt)
-        emb_src = torch.max(emb_src, 2, keepdim=True)[0]
-        emb_tgt = torch.max(emb_tgt, 2, keepdim=True)[0]
+        src_embedding_p, tgt_embedding_p = self.attention(emb_src, emb_tgt)  # [32 512 1024]
+        emb_src = torch.max(src_embedding_p, 2, keepdim=True)[0]
+        emb_tgt = torch.max(tgt_embedding_p, 2, keepdim=True)[0]
         state = torch.cat((emb_src, emb_tgt), dim=-1)
         state = state.view(B, -1)
 
