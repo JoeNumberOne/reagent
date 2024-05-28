@@ -1,5 +1,5 @@
 # ==== DATASET PATHS
-M40_PATH = "/home/ghx/point cloud/regagent_dgcnn/data/modelnet40_ply_hdf5_2048"
+M40_PATH = "/home/xiong/ghx/gai123/reagent-main+ada/data/modelnet40_ply_hdf5_2048"
 SON_PATH = "/PATH/TO/main_split_nobg"
 LM_PATH = "/PATH/TO/BOP19/lm"
 
@@ -7,7 +7,7 @@ BOP_PATH = "/PATH/TO/bop_toolkit"
 
 # ==== REAGENT PARAMETERS
 # iterations and replay buffer
-BATCH_SIZE = 32
+BATCH_SIZE = 8
 ITER_TRAIN, ITER_EVAL = 10, 10
 NUM_TRAJ = 4
 

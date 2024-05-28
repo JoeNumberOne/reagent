@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 # from mmcv.ops import DeformConv2dPack as DCN
 from config import *
-from transformer import Transformer
+# from transformer import Transformer
 
 class Agent(nn.Module):
 
@@ -36,11 +36,11 @@ class PointNet(nn.Module):
         self.conv3 = nn.Conv1d(128, 1024, 1)
 
     def forward(self, x):
-        B, D, N = x.shape
+        B, D, N = x.shape #[16 3 1024]
         # embedding: BxDxN -> BxFxN
-        x1 = F.relu(self.conv1(x))
-        x2 = F.relu(self.conv2(x1))
-        x3 = self.conv3(x2)
+        x1 = F.relu(self.conv1(x)) #[16 64 1024]
+        x2 = F.relu(self.conv2(x1)) #[16 128 1024]
+        x3 = self.conv3(x2) #[16 1024 1024]
         return x3
         # pooling: BxFxN -> BxFx1
         # x_pooled = torch.max(x3, 2, keepdim=True)[0]
@@ -54,7 +54,7 @@ class StateEmbed(nn.Module):
         super().__init__()
         self.emb_nn = PointNet()
         # self.pos = Position_encoding()
-        self.attention = Transformer()
+        # self.attention = Transformer()
 
     def forward(self, src, tgt):
         B, N, D = src.shape
@@ -64,13 +64,15 @@ class StateEmbed(nn.Module):
         if BENCHMARK and len(tgt.shape) != 3:
             emb_tgt = tgt  # re-use target embedding from first step
         else:
-            emb_tgt = self.emb_nn(tgt.transpose(2, 1))
+            emb_tgt = self.emb_nn(tgt.transpose(2, 1)) #[16 1024 1024]
 
-        # src_encoding = self.Position_encoding(src.transpose(1, 2)).transpose(1, 2).contiguous()  # [2 512 800]
-        # tgt_encoding = self.Position_encoding(tgt.transpose(1,2)).transpose(1,2).contiguous() #[2 512 800]
-        src_embedding_p, tgt_embedding_p = self.attention(emb_src, emb_tgt)  # [32 512 1024]
-        emb_src = torch.max(src_embedding_p, 2, keepdim=True)[0]
-        emb_tgt = torch.max(tgt_embedding_p, 2, keepdim=True)[0]
+        # src_encoding = self.Position_encoding(emb_src.transpose(1, 2)).transpose(1, 2).contiguous()  # [2 512 800]
+        # tgt_encoding = self.Position_encoding(emb_tgt.transpose(1,2)).transpose(1,2).contiguous() #[2 512 800]
+        # src_embedding_p, tgt_embedding_p = self.attention(emb_src, emb_tgt)  # [32 512 1024]
+        emb_src = torch.max(emb_src, 2, keepdim=True)[0]
+        emb_tgt = torch.max(emb_tgt, 2, keepdim=True)[0]
+        emb_src = emb_src.view(B, -1)
+        emb_tgt = emb_tgt.view(B, -1)
         state = torch.cat((emb_src, emb_tgt), dim=-1)
         state = state.view(B, -1)
 

@@ -3,97 +3,55 @@
 
 
 import os
+import sys
+import glob
+import h5py
 import copy
 import math
-import json
 import numpy as np
-from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# from sklearn.metrics import r2_score
-# from util import transform_point_cloud, npmat2euler
-# //////////
-import itertools
-# import dcputil
-import csv
-#
-# def getTri(pcd,pairs):
-#     """
-#     Function: get triangles
-#     Param:
-#         pcd:    point cloud coordinates [B, Number_points, 3]
-#         pairs:  get pairs to form triangles [B, Number_points, Number_pairs, 3]
-#     Return:
-#         result: return the length of the three sides of each triangle, and sort from small to large
-#                 [B, Number_points, Number_pairs, 3]
-#     """
-#     B,N,N_p,_ = pairs.shape
-#     result = torch.zeros((B*N, N_p, 3), dtype=torch.float32)
-#     temp = (torch.arange(B) * N).reshape(B,1,1,1).repeat(1,N,N_p,3).cuda()
-#     pairs = pairs + temp
-#     pcd = pcd.reshape(-1,3)
-#     pairs = pairs.reshape(-1,N_p,3)
-#     result[:,:,0] = (torch.sum(((pcd[pairs[:,:,0],:]-pcd[pairs[:,:,1],:])**2),dim=-1))
-#     result[:,:,1] = (torch.sum(((pcd[pairs[:,:,1],:]-pcd[pairs[:,:,2],:])**2),dim=-1))
-#     result[:,:,2] = (torch.sum(((pcd[pairs[:,:,0],:]-pcd[pairs[:,:,2],:])**2),dim=-1))
-#     result = result.reshape(B,N,N_p,3)
-#     result, _ = torch.sort(result,dim=-1,descending=False)
-#     return result
-#     return result
-#
-# def knn_tri(x,k):
-#     """
-#     Function: find the k nearest points outside DISTANCE_THRESHOLD
-#     Param:
-#         x:  point clouds [B, 3, Number_points]
-#         k:  The number of points
-#     Return:
-#         idx: the index of k nearest points
-#     """
-#     DISTANCE_THRESHOLD = -0.1
-#     x = x.transpose(1,2)
-#     distance = -(torch.sum((x.unsqueeze(1) - x.unsqueeze(2)).pow(2), -1) + 1e-7)
-#     mask = distance > DISTANCE_THRESHOLD
-#     distance[mask] = float('-inf')
-#     idx = distance.topk(k=k,dim=-1)[1]
-#     return idx
-#
-def clones(module, N):
-    """
-    Function: clone the module N times
-    """
+from torch.autograd import Variable
+
+
+
+# Part of the code is referred from: http://nlp.seas.harvard.edu/2018/04/03/attention.html#positional-encoding
+
+
+# 常用于构建多个相同结构的网络层或模块的情况，避免了手动复制和创建多个对象的繁琐过程。
+# 函数的作用是将传入的 module 对象进行深拷贝，并创建一个包含 N 个该拷贝对象的 nn.ModuleList（PyTorch中的模型容器）返回。
+def clones(module, N):  # 编码器中有n个，拷贝N个模型
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 
+# 注意力机制，传入Q,K,V
 def attention(query, key, value, mask=None, dropout=None):
-    """
-    Function: attention mechanism
-    """
+    '''
+    注意力机制：QK相乘得到相似度A，AV相乘得到注意力值Z
+    '''
     d_k = query.size(-1)
+    # 除dk防止跨度太大，出现异常情况  QK转置/dk
     scores = torch.matmul(query, key.transpose(-2, -1).contiguous()) / math.sqrt(d_k)
+    # mask做掩码注意力机制，在解码时会用
     if mask is not None:
-        scores = scores.masked_fill(mask==0, -1e9)
-    p_attn = F.softmax(scores, dim=-1)
-    if dropout is not None:
-        p_attn = dropout(p_attn)
+        scores = scores.masked_fill(mask == 0, -1e9)
+    p_attn = F.softmax(scores, dim=-1)  # 得到注意力的概率，softmax
     return torch.matmul(p_attn, value), p_attn
 
-def knn(x, k):
-    """
-    Function: find the k nearest points
-    Param:
-        x:  point cloud [B, 3, Number_points]
-        k:  The number of points
-    Return:
-        idx: the index of k nearest points
-    """
-    x = x.transpose(1,2)
-    distance = -(torch.sum((x.unsqueeze(1) - x.unsqueeze(2)).pow(2), -1) + 1e-7)
-    idx = distance.topk(k=k, dim=-1)[1]
-    return idx
+
+def nearest_neighbor(src, dst):  # 用于计算源点集（src）和目标点集（dst）之间的最近邻距离和索引
+    inner = -2 * torch.matmul(src.transpose(1, 0).contiguous(), dst)  # src, dst (num_dims, num_points)
+    distances = -torch.sum(src ** 2, dim=0, keepdim=True).transpose(1, 0).contiguous() - inner - torch.sum(dst ** 2,
+                                                                                                           dim=0,
+                                                                                                           keepdim=True)
+    distances, indices = distances.topk(k=1, dim=-1)  # topk() 函数，在每个源点对应的距离中选择最小的距离，并返回该距离和其对应的索引。
+    return distances, indices
 
 
+# DGCNN中的knn算法
+
+# 编码器-解码器 结构
 class EncoderDecoder(nn.Module):
     """
     A standard Encoder-Decoder architecture. Base for this and many
@@ -121,19 +79,23 @@ class EncoderDecoder(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, n_emb_dims):
+    '''
+    包含linear和softmax层
+    '''
+
+    def __init__(self, emb_dims):
         super(Generator, self).__init__()
-        self.nn = nn.Sequential(nn.Linear(n_emb_dims, n_emb_dims//2),
-                                nn.LayerNorm(n_emb_dims//2),
-                                nn.LeakyReLU(),
-                                nn.Linear(n_emb_dims//2, n_emb_dims//4),
-                                nn.LayerNorm(n_emb_dims//4),
-                                nn.LeakyReLU(),
-                                nn.Linear(n_emb_dims//4, n_emb_dims//8),
-                                nn.LayerNorm(n_emb_dims//8),
-                                nn.LeakyReLU())
-        self.proj_rot = nn.Linear(n_emb_dims//8, 4)
-        self.proj_trans = nn.Linear(n_emb_dims//8, 3)
+        self.nn = nn.Sequential(nn.Linear(emb_dims, emb_dims // 2),
+                                nn.BatchNorm1d(emb_dims // 2),
+                                nn.ReLU(),
+                                nn.Linear(emb_dims // 2, emb_dims // 4),
+                                nn.BatchNorm1d(emb_dims // 4),
+                                nn.ReLU(),
+                                nn.Linear(emb_dims // 4, emb_dims // 8),
+                                nn.BatchNorm1d(emb_dims // 8),
+                                nn.ReLU())
+        self.proj_rot = nn.Linear(emb_dims // 8, 4)
+        self.proj_trans = nn.Linear(emb_dims // 8, 3)
 
     def forward(self, x):
         x = self.nn(x.max(dim=1)[0])
@@ -143,7 +105,8 @@ class Generator(nn.Module):
         return rotation, translation
 
 
-class Encoder(nn.Module):
+# 编码器
+class Encoder(nn.Module):  # 构建多层编码器
     def __init__(self, layer, N):
         super(Encoder, self).__init__()
         self.layers = clones(layer, N)
@@ -155,10 +118,11 @@ class Encoder(nn.Module):
         return self.norm(x)
 
 
-class Decoder(nn.Module):
+# 解码器
+class Decoder(nn.Module):  # 构建多层解码器
     "Generic N layer decoder with masking."
 
-    def __init__(self, layer, N):
+    def __init__(self, layer, N):  # 译码器堆叠n=6层
         super(Decoder, self).__init__()
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
@@ -169,35 +133,65 @@ class Decoder(nn.Module):
         return self.norm(x)
 
 
-class LayerNorm(nn.Module):
+'''LayerNorm实现标准化
+LayerNorm的作用：对x归一化，使x的均值为0，方差为1
+'''
+
+
+class LayerNorm(nn.Module):  # 两个子层中的每一个都采用残差连接（cite），然后进行层归一化
+    '''
+    eps是一个平滑的过程，取值通常在（10^-4~10^-8 之间）
+        其含义是，对于每个参数，随着其更新的总距离增多，其学习速率也随之变慢。
+        防止出现除以0的情况
+    '''
+
     def __init__(self, features, eps=1e-6):
         super(LayerNorm, self).__init__()
         self.a_2 = nn.Parameter(torch.ones(features))
         self.b_2 = nn.Parameter(torch.zeros(features))
         self.eps = eps
+        '''
+         nn.Parameter将一个不可训练的类型Tensor转换成可以训练的类型parameter，
+        并将这个parameter绑定到这个module里面。
+        使用这个函数的目的也是想让某些变量在学习的过程中不断的修改其值以达到最优化。
+        '''
 
-    def forward(self, x):
-        mean = x.mean(-1, keepdim=True)
-        std = x.std(-1, keepdim=True)
-        return self.a_2 * (x-mean) / (std + self.eps) + self.b_2
+    def forward(self, x):  # 输入的东西放在forward中，初始化参数一般在init中
+        mean = x.mean(-1, keepdim=True)  # 平均值
+        std = x.std(-1, keepdim=True)  # 求标准差
+        # LayerNorm的计算公式
+        return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
 
 
-class SublayerConnection(nn.Module):
-    def __init__(self, size, dropout):
+class SublayerConnection(nn.Module):  # 为了促进这些残差连接，模型中的所有子层以及 作为嵌入层，生成维度的输出d=512
+    '''SublayerConnection做的事残差和layernorm
+    子层的连接: layer_norm(x + sublayer(x))
+        上述可以理解为一个残差网络加上一个LayerNorm归一化
+    '''
+
+    def __init__(self, size, dropout=None):
         super(SublayerConnection, self).__init__()
+        # 做layernorm标准化
         self.norm = LayerNorm(size)
-        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, sublayer):
+        '''标准化是此处表示的是：初始的x与attention层的输出相加
+          x:是上一层self-attention的输入
+          sublayer：self-attention层
+        '''
         return x + sublayer(self.norm(x))
 
 
-class EncoderLayer(nn.Module):
+class EncoderLayer(nn.Module):  # 每个图层有两个子图层。首先是多头自我关注 机制，第二个是简单的、位置上的全连接
+    '''
+    attn实例化的是一个多头注意力 attn=MultiHeadAttention(n_heads,d_model,dropout)
+    '''
+
     def __init__(self, size, self_attn, feed_forward, dropout):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
-        self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 2)
+        self.feed_forward = feed_forward  # 实例化feed_forward层
+        self.sublayer = clones(SublayerConnection(size, dropout), 2)  # 克隆两次残差连接
         self.size = size
 
     def forward(self, x, mask):
@@ -205,13 +199,15 @@ class EncoderLayer(nn.Module):
         return self.sublayer[1](x, self.feed_forward)
 
 
+# 除了每个编码器层中的两个子层外，解码器还插入一个 第三子层，对输出执行多头注意力 编码器堆栈。
+# 与编码器类似，我们在周围采用残余连接 每个子层，然后是层归一化。
 class DecoderLayer(nn.Module):
     "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
 
     def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
         super(DecoderLayer, self).__init__()
         self.size = size
-        self.self_attn = self_attn
+        self.self_attn = self_attn  # d多头注意力
         self.src_attn = src_attn
         self.feed_forward = feed_forward
         self.sublayer = clones(SublayerConnection(size, dropout), 3)
@@ -225,145 +221,113 @@ class DecoderLayer(nn.Module):
 
 
 class MultiHeadedAttention(nn.Module):
-    def __init__(self, h, d_model, dropout=0.0):
+    '''
+        d_model:输入维度
+        head：头数，默认是8头
+    '''
+
+    def __init__(self, h, d_model, dropout=0.1):
         "Take in model size and number of heads."
         super(MultiHeadedAttention, self).__init__()
-        assert d_model % h == 0
-        self.d_k = d_model // h
-        self.h = h
+        assert d_model % h == 0  # 多头注意力平均分
+        # We assume d_v always equals d_k
+        self.d_k = d_model // h  # 取整
+        self.h = h  # head参数
         self.linears = clones(nn.Linear(d_model, d_model), 4)
         self.attn = None
-        self.dropout = nn.Dropout(p=dropout)
+        self.dropout = None
 
+    # query, key, value表示Q,K,V
     def forward(self, query, key, value, mask=None):
         "Implements Figure 2"
         if mask is not None:
+            # Same mask applied to all h heads.
             mask = mask.unsqueeze(1)
         nbatches = query.size(0)
 
+        # 1) Do all the linear projections in batch from d_model => h x d_k
         query, key, value = \
             [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2).contiguous()
              for l, x in zip(self.linears, (query, key, value))]
 
+        # 2) Apply attention on all the projected vectors in batch.
         x, self.attn = attention(query, key, value, mask=mask,
                                  dropout=self.dropout)
 
+        # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous() \
             .view(nbatches, -1, self.h * self.d_k)
         return self.linears[-1](x)
 
-class PositionwiseFeedForward(nn.Module):
+
+class PositionwiseFeedForward(nn.Module):  # 前馈神经网络FFN
     "Implements FFN equation."
-    def __init__(self, d_model, d_ff, dropout=0.1):
+    '''   w2(relu(w1x+b1))+b2    需要设置两个参数w1,w2 '''
+
+    def __init__(self, d_model, d_ff, dropout=0.1):  # init中存放的是参数
         super(PositionwiseFeedForward, self).__init__()
         self.w_1 = nn.Linear(d_model, d_ff)
+        self.norm = nn.Sequential()  # nn.BatchNorm1d(d_ff)标准化
         self.w_2 = nn.Linear(d_ff, d_model)
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = None
 
-    def forward(self, x):
-        return self.w_2(self.dropout(F.leaky_relu(self.w_1(x), negative_slope=0.2)))
+    def forward(self, x):  # forward存放的是输入
+        return self.w_2(self.norm(F.relu(self.w_1(x)).transpose(2, 1).contiguous()).transpose(2, 1).contiguous())
+
 
 class Transformer(nn.Module):
-    def __init__(self):
+    def __init__(self, args):  # 初始化类中结构
         super(Transformer, self).__init__()
-        self.n_emb_dims = 1024
-        self.N = 12
-        self.dropout = 0.2
-        self.n_ff_dims = 1024
-        self.n_heads = 4
+        self.emb_dims = args.emb_dims
+        self.N = args.n_blocks
+        self.dropout = args.dropout
+        self.ff_dims = args.ff_dims
+        self.n_heads = args.n_heads
         c = copy.deepcopy
-        attn = MultiHeadedAttention(self.n_heads, self.n_emb_dims)
-        ff = PositionwiseFeedForward(self.n_emb_dims, self.n_ff_dims, self.dropout)
-        self.model = EncoderDecoder(Encoder(EncoderLayer(self.n_emb_dims, c(attn), c(ff), self.dropout), self.N),
-                                    Decoder(DecoderLayer(self.n_emb_dims, c(attn), c(attn), c(ff), self.dropout), self.N),
+        attn = MultiHeadedAttention(self.n_heads, self.emb_dims)
+        ff = PositionwiseFeedForward(self.emb_dims, self.ff_dims, self.dropout)
+        self.model = EncoderDecoder(Encoder(EncoderLayer(self.emb_dims, c(attn), c(ff), self.dropout), self.N),
+                                    Decoder(DecoderLayer(self.emb_dims, c(attn), c(attn), c(ff), self.dropout), self.N),
                                     nn.Sequential(),
                                     nn.Sequential(),
                                     nn.Sequential())
 
-    def forward(self, *input):
-        src = input[0] #[2 512 800]
+    def forward(self, *input):  # transformer前向传播
+        src = input[0]  # 源输入数据 src 和目标输入数据 tgt
         tgt = input[1]
-        # print(src.shape)
-        # print(tgt.shape)
-        src = src.transpose(2, 1).contiguous() #[2 800 512]
+        src = src.transpose(2, 1).contiguous()
         tgt = tgt.transpose(2, 1).contiguous()
-        tgt_embedding = self.model(src, tgt, None, None).transpose(2, 1).contiguous() #[2 512 800]
-        src_embedding = self.model(tgt, src, None, None).transpose(2, 1).contiguous() #[2 512 800]
+        tgt_embedding = self.model(src, tgt, None, None).transpose(2, 1).contiguous()
+        src_embedding = self.model(tgt, src, None, None).transpose(2, 1).contiguous()
         return src_embedding, tgt_embedding
 
-# class Position_encoding(nn.Module):
-#     def __init__(self,len,ratio):
-#         super(Position_encoding,self).__init__()
-#         self.PE = nn.Sequential(
-#             nn.Linear(3,len * ratio),
-#             nn.Sigmoid(),
-#             nn.Linear(len * ratio,len),
-#             nn.ReLU()
-#         )
-#     def forward(self,x): #[ 2 800 3]
-#         x=self.PE(x)
-#         return x
-#
-# class SE_Block(nn.Module):
-#     def __init__(self,ch_in,reduction=16):
-#         super(SE_Block,self).__init__()
-#         self.avg_pool = nn.AdaptiveAvgPool1d(1)
-#         self.fc = nn.Sequential(
-#             nn.Linear(ch_in,ch_in//reduction,bias=False),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(ch_in//reduction,ch_in,bias=False),
-#             nn.Sigmoid()
-#         )
-#     def forward(self,x):
-#         b,c,_ = x.size()
-#         y = self.avg_pool(x).view(b,c)
-#         y = self.fc(y).view(b,c,1)
-#         return x*y.expand_as(x)
-#
-# class T_prediction(nn.Module):
-#     def __init__(self, args):
-#         super(T_prediction, self).__init__()
-#         self.n_emb_dims = args.n_emb_dims
-#         self.Position_encoding = Position_encoding(args.n_emb_dims,8)
-#         self.SE_Block = SE_Block(ch_in=args.n_emb_dims)
-#         self.emb_nn = PSE_module(embed_dim=args.n_emb_dims,token_dim=args.token_dim)
-#         self.attention = Transformer(args=args)
-#         self.temp_net = TemperatureNet(args)
-#         self.head = SVDHead(args=args)
-#
-#     def forward(self, *input):
-#         src, tgt, src_embedding, tgt_embedding, temperature, feature_disparity, is_corr = self.predict_embedding(*input)
-#         #src[2 3 800] src_embedding[2 512 800] feature_disparity[2 512 ]
-#         rotation_ab, translation_ab, corres_ab, weight_ab = self.head(src_embedding, tgt_embedding, src, tgt, temperature,is_corr)
-#         rotation_ba, translation_ba, corres_ba, weight_ba = self.head(tgt_embedding, src_embedding, tgt, src, temperature,is_corr)
-#         return rotation_ab, translation_ab, rotation_ba, translation_ba, feature_disparity, corres_ab, weight_ab
-#
-#     def predict_embedding(self, *input):
-#         src = input[0]  #src[2 3 800]
-#         tgt = input[1]  #[2 3 800]
-#         is_corr = input[2] #=1
-#         src_embedding = self.emb_nn(src) #[2 512 800]
-#         tgt_embedding = self.emb_nn(tgt) #[2 512 800]
-#         src_encoding = self.Position_encoding(src.transpose(1,2)).transpose(1,2).contiguous() #[2 512 800]
-#         tgt_encoding = self.Position_encoding(tgt.transpose(1,2)).transpose(1,2).contiguous() #[2 512 800]
-#
-#         src_embedding_p, tgt_embedding_p = self.attention(src_embedding+src_encoding, tgt_embedding+tgt_encoding)  #src_embedding_p[2 512 800]
-#         #src_embedding+src_encoding=[2 512 800]+[2 512 800]
-#         src_embedding = self.SE_Block(src_embedding+src_embedding_p)
-#         tgt_embedding = self.SE_Block(tgt_embedding+tgt_embedding_p)
-#         temperature, feature_disparity = self.temp_net(src_embedding, tgt_embedding) #[2 512]
-#
-#
-#         return src, tgt, src_embedding, tgt_embedding, temperature, feature_disparity, is_corr
-#
-#     def predict_keypoint_correspondence(self, *input):
-#         src, tgt, src_embedding, tgt_embedding, temperature, _ = self.predict_embedding(*input)
-#         batch_size, num_dims, num_points = src.size()
-#         d_k = src_embedding.size(1)
-#         scores = torch.matmul(src_embedding.transpose(2, 1).contiguous(), tgt_embedding) / math.sqrt(d_k)
-#         scores = scores.view(batch_size*num_points, num_points)
-#         temperature = temperature.repeat(1, num_points, 1).view(-1, 1)
-#         scores = F.gumbel_softmax(scores, tau=temperature, hard=True)
-#         scores = scores.view(batch_size, num_points, num_points)
-#         return src, tgt, scores
-#
+
+'''位置编码器
+class PositionalEncoding(nn.Module): 正弦位置编码，即通过三角函数构建位置编码
+    "Implement the PE function."
+    param dim: 位置向量的向量维度，一般与词向量维度相同，即d_model
+    :param dropout: Dropout层的比率
+    :param max_len: 句子的最大长度
+    def __init__(self, d_model, dropout, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        构建位置编码pe
+        pe公式为：
+        PE(pos,2i/2i+1) = sin/cos(pos/10000^{2i/d_{model}})
+
+        pe = torch.zeros(max_len, d_model)  max_len最长的长度
+        position = torch.arange(0, max_len).unsqueeze(1) 
+        div_term = torch.exp(torch.arange(0, d_model, 2) *
+                             -(math.log(10000.0) / d_model))
+        偶数用sin,奇数用cos
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + Variable(self.pe[:, :x.size(1)], 
+                         requires_grad=False)
+        return self.dropout(x)
+'''
