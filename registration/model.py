@@ -4,7 +4,6 @@ from torch.distributions import Categorical
 import torch.nn.functional as F
 import numpy as np
 # from mmcv.ops import DeformConv2dPack as DCN
-from adaptive import AdaptiveFCN
 from config import *
 
 
