@@ -276,13 +276,13 @@ class PositionwiseFeedForward(nn.Module):  # 前馈神经网络FFN
 
 
 class Transformer(nn.Module):
-    def __init__(self, args):  # 初始化类中结构
+    def __init__(self):  # 初始化类中结构
         super(Transformer, self).__init__()
-        self.emb_dims = args.emb_dims
-        self.N = args.n_blocks
-        self.dropout = args.dropout
-        self.ff_dims = args.ff_dims
-        self.n_heads = args.n_heads
+        self.emb_dims = 1024
+        self.N = 1
+        self.dropout = 0.0
+        self.ff_dims = 1024
+        self.n_heads = 4
         c = copy.deepcopy
         attn = MultiHeadedAttention(self.n_heads, self.emb_dims)
         ff = PositionwiseFeedForward(self.emb_dims, self.ff_dims, self.dropout)

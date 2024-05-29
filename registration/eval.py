@@ -48,11 +48,11 @@ def evaluate(agent, test_loader, dataset_name, bop_results_path="", visualize=Fa
                     vis.update(current_source[0, :, :3].cpu().numpy())
 
             for step in range(cfg.ITER_EVAL):
-                if cfg.BENCHMARK:
-                    # re-use target embedding from first step (faster)
-                    state_emb, action_logit, state_value, target = agent(current_source, target)
-                else:
-                    state_emb, action_logit, state_value, _ = agent(current_source, target)
+                # if cfg.BENCHMARK:
+                #     # re-use target embedding from first step (faster)
+                #     state_emb, action_logit, state_value, target = agent(current_source, target)
+                # else:
+                state_emb, action_logit, state_value, _ = agent(current_source, target)
                 actions = util_model.action_from_logits(action_logit, deterministic=True)
                 current_source, pose_source = env.step(source, actions, pose_source, cfg.DISENTANGLED)
 
